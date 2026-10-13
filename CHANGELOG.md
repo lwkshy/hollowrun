@@ -2,6 +2,12 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## 2.0.2 - 2026-10-14
+
+### Fixed
+
+- Show and refresh card-drop counts for manually started games while they are idling, not only for card-queue sessions.
+
 ## 2.0.1 - 2026-08-28
 
 ### Fixed

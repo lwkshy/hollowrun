@@ -31,6 +31,7 @@ const LIBRARY_REFRESH_INTERVAL_MS = 30000;
 const CARD_DROP_REFRESH_INTERVAL_MS = 60000;
 const QUEUE_CARD_DROP_REFRESH_INTERVAL_MS = 60000;
 const BULK_QUEUE_CARD_DROP_REFRESH_INTERVAL_MS = 120000;
+const RUNNING_CARD_DROP_CHECK_CONCURRENCY = 4;
 const MAX_CONCURRENT_CARD_GAMES = 32;
 const TASK_QUEUE_STORAGE_PREFIX = 'hollowrun.taskQueue';
 
@@ -140,10 +141,21 @@ export default function App() {
   const cardScanRequestId = useRef(0);
   const cardScanAbortController = useRef(null);
   const cardDropChecksInFlight = useRef(new Set());
+  const runningCardDropRefreshInFlight = useRef(false);
   const bulkQueueStopsInFlight = useRef(new Set());
   const profileMenuRef = useRef(null);
   const isBulkQueueActive = bulkQueueAppIds.length > 0;
   const isAnyQueueActive = isQueueActive || isBulkQueueActive;
+  const manuallyRunningAppIdsKey = useMemo(() => {
+    const queueManagedAppIds = new Set(bulkQueueAppIds);
+    if (isQueueActive && queueCurrentAppId) queueManagedAppIds.add(queueCurrentAppId);
+
+    return Array.from(new Set(sessions
+      .map(session => Number(session?.appId))
+      .filter(appId => Number.isSafeInteger(appId) && appId > 10 && !queueManagedAppIds.has(appId))))
+      .sort((left, right) => left - right)
+      .join(',');
+  }, [bulkQueueAppIds, isQueueActive, queueCurrentAppId, sessions]);
   
   const fetchData = useCallback(async () => {
     try {
@@ -467,6 +479,43 @@ export default function App() {
   }, [isQueueActive, queueCurrentAppId, refreshCardDropGame]);
 
   useEffect(() => {
+    const appIds = manuallyRunningAppIdsKey
+      .split(',')
+      .map(Number)
+      .filter(appId => Number.isSafeInteger(appId) && appId > 10);
+    if (appIds.length === 0) return undefined;
+
+    let cancelled = false;
+    const refreshRunningGames = async () => {
+      if (runningCardDropRefreshInFlight.current) return;
+      runningCardDropRefreshInFlight.current = true;
+      let nextIndex = 0;
+
+      try {
+        await Promise.all(Array.from(
+          { length: Math.min(RUNNING_CARD_DROP_CHECK_CONCURRENCY, appIds.length) },
+          async () => {
+            while (!cancelled && nextIndex < appIds.length) {
+              const appId = appIds[nextIndex];
+              nextIndex += 1;
+              await refreshCardDropGame(appId);
+            }
+          }
+        ));
+      } finally {
+        runningCardDropRefreshInFlight.current = false;
+      }
+    };
+
+    refreshRunningGames();
+    const interval = setInterval(refreshRunningGames, QUEUE_CARD_DROP_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [manuallyRunningAppIdsKey, refreshCardDropGame]);
+
+  useEffect(() => {
     if (!queueOwnerSteamId || queueOwnerSteamId !== activeSteamId) return;
     try {
       localStorage.setItem(`${TASK_QUEUE_STORAGE_PREFIX}.${queueOwnerSteamId}`, JSON.stringify(queuedGames));
@@ -619,7 +668,7 @@ export default function App() {
       const result = response.results?.[0];
       if (!result?.success) throw new Error(result?.error || 'Steam worker failed to start');
       setQueuedGames(previous => previous.filter(game => game.appId !== appId));
-      await fetchData();
+      await Promise.all([fetchData(), refreshCardDropGame(appId)]);
       return true;
     } catch (err) {
       setErrorMessage(`Could not start AppID ${appId}: ${err.message}`);
@@ -902,6 +951,12 @@ export default function App() {
   const cardDropByAppId = useMemo(
     () => new Map(cardDropGames.map(game => [game.appid, game])),
     [cardDropGames]
+  );
+  const cardDropCountsByAppId = useMemo(
+    () => new Map(cardDrops.games
+      .filter(game => Number.isSafeInteger(game.dropsRemaining))
+      .map(game => [game.appId, game.dropsRemaining])),
+    [cardDrops.games]
   );
   const cardDropAppIds = useMemo(() => new Set(cardDropByAppId.keys()), [cardDropByAppId]);
 
@@ -1561,6 +1616,7 @@ export default function App() {
             const isQueued = queuedAppIds.has(game.appid);
             const displayName = getDisplayGameName(game);
             const sessionName = hasPlaceholderGameName(game) ? `AppID ${game.appid}` : displayName;
+            const runningDropsRemaining = cardDropCountsByAppId.get(game.appid);
             
             return (
               <div key={game.appid} className={`game-card ${isRunning ? 'running' : isQueued ? 'queued' : ''}`}>
@@ -1583,7 +1639,9 @@ export default function App() {
 
                   <div className="game-subtext">
                     {isRunning
-                      ? 'Idling now'
+                      ? Number.isSafeInteger(runningDropsRemaining)
+                        ? `${runningDropsRemaining} card drop${runningDropsRemaining === 1 ? '' : 's'} remaining`
+                        : 'Idling now'
                       : !isSearching && activeTab === 'cards'
                         ? Number.isSafeInteger(game.cardDropsRemaining)
                           ? `${game.cardDropsRemaining} card drop${game.cardDropsRemaining === 1 ? '' : 's'} remaining`
@@ -1718,7 +1776,9 @@ export default function App() {
                         ? formatDropsLeft(queueCurrentDropsRemaining)
                         : bulkQueueAppIdSet.has(session.appId)
                           ? formatDropsLeft(bulkQueueDropCounts[session.appId])
-                        : 'Idling now'}
+                          : Number.isSafeInteger(cardDropCountsByAppId.get(session.appId))
+                            ? formatDropsLeft(cardDropCountsByAppId.get(session.appId))
+                            : 'Idling now'}
                     </span>
                     <span className="task-elapsed">{formatTimer(session.elapsedSeconds || 0)}</span>
                   </div>

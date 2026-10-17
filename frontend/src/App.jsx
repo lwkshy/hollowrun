@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Gamepad2, CheckSquare, UserCircle, Activity, Clock, ListChecks, Zap, Hexagon, Search,
   Square, X, History, ListPlus, Play, CreditCard, ChevronUp, MessageSquareText,
-  Settings as SettingsIcon
+  RotateCw, Settings as SettingsIcon
 } from 'lucide-react';
 import {
   formatDropsLeft,
@@ -351,7 +351,7 @@ export default function App() {
       setCardDrops(previous => ({
         ...previous,
         status: 'loading',
-        games: [],
+        games: previous.games,
         incomplete: true,
         scannedPages: 0,
         totalPages: 0
@@ -367,7 +367,7 @@ export default function App() {
           const nextGames = normalizeCardDropGames(result.games);
           setCardDrops(previous => {
             let visibleGames = nextGames;
-            if (quiet && result.progress === true) {
+            if (result.progress === true && previous.games.length > 0) {
               const merged = new Map(previous.games.map(game => [game.appId, game]));
               nextGames.forEach(game => merged.set(game.appId, game));
               visibleGames = Array.from(merged.values());
@@ -421,6 +421,11 @@ export default function App() {
       cardDropChecksInFlight.current.delete(normalizedAppId);
     }
   }, [activeSteamId]);
+
+  const handleRefreshCardDrops = useCallback(() => {
+    if (cardDrops.status === 'loading' || !activeSteamId) return;
+    fetchCardDrops({ force: true });
+  }, [activeSteamId, cardDrops.status, fetchCardDrops]);
 
   useEffect(() => {
     queueRunGeneration.current += 1;
@@ -1580,16 +1585,31 @@ export default function App() {
           <div className="section-title">
             Games <span className="badge">{activeTab === 'cards' ? `${cardDropGames.length}${cardDrops.incomplete ? '+' : ''} With Drops` : `${sessions.length} Running`}</span>
           </div>
-          {isCardScanRunning && (
-            <div className="card-scan-indicator" role="status" aria-live="polite">
-              <span className="card-scan-visual" aria-hidden="true">
-                <CreditCard size={16} />
-                <span className="card-scan-sweep" />
-              </span>
-              <span>Scanning card drops</span>
-              <span className="card-scan-dots" aria-hidden="true"><i /><i /><i /></span>
-            </div>
-          )}
+          <div className="section-header-actions">
+            {isCardScanRunning && (
+              <div className="card-scan-indicator" role="status" aria-live="polite">
+                <span className="card-scan-visual" aria-hidden="true">
+                  <CreditCard size={16} />
+                  <span className="card-scan-sweep" />
+                </span>
+                <span>Scanning card drops</span>
+                <span className="card-scan-dots" aria-hidden="true"><i /><i /><i /></span>
+              </div>
+            )}
+            {activeTab === 'cards' && (
+              <button
+                type="button"
+                className="section-refresh-btn"
+                disabled={isCardScanRunning || !activeSteamId}
+                onClick={handleRefreshCardDrops}
+                title={!activeSteamId ? 'Steam client not connected' : isCardScanRunning ? 'Scanning card drops...' : 'Refresh card drops'}
+                aria-label="Refresh card drops"
+              >
+                <RotateCw size={13} className={isCardScanRunning ? 'spinning' : ''} />
+                <span>Refresh</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Games Grid */}
@@ -1603,9 +1623,14 @@ export default function App() {
                     ? 'No games owned by the active Steam account match this search.'
                     : 'No games could be verified for the active Steam account.'}
               </span>
-              {activeTab === 'cards' && showCardRetry && (
-                <button type="button" className="empty-state-action" onClick={() => fetchCardDrops({ force: true })}>
-                  Try again
+              {activeTab === 'cards' && (showCardRetry || (!isSearching && cardDrops.status === 'ready')) && (
+                <button
+                  type="button"
+                  className="empty-state-action"
+                  disabled={isCardScanRunning || !activeSteamId}
+                  onClick={handleRefreshCardDrops}
+                >
+                  {showCardRetry ? 'Try again' : 'Refresh card drops'}
                 </button>
               )}
             </div>
@@ -1630,6 +1655,7 @@ export default function App() {
                   {isRunning && session ? (
                     <div className="game-timer">
                       <Clock size={12} /> {formatTimer(session.elapsedSeconds || 0)}
+                      {game.playtimeMinutes > 0 && <span className="game-timer-total"> · {formatPlaytime(game.playtimeMinutes)} total</span>}
                     </div>
                   ) : (
                     <div className="game-timer">

@@ -2,6 +2,17 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## 2.0.3 - 2026-10-17
+
+### Added
+
+- Added an on-demand card-drop refresh action in the Games view.
+
+### Changed
+
+- Keep existing card-drop results visible while a refresh is running.
+- Show each running game's total Steam playtime alongside its current session timer.
+
 ## 2.0.2 - 2026-10-14
 
 ### Fixed
